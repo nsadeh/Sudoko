@@ -53,11 +53,13 @@ object PartConstructor {
     }
     case class Part(state: State) extends CoordinatorCommand
 
-    def apply(state: State, coordinator: ActorRef[CoordinatorCommand]): Behavior[ValidBoardLength] = constructPart(state, coordinator)
+    def apply(coordinator: ActorRef[CoordinatorCommand]): Behavior[ValidBoardLength] = constructPart(emptyState, coordinator)
 
     def constructPart(state: State, coordinator: ActorRef[CoordinatorCommand]): Behavior[ValidBoardLength] = Behaviors.receive{ (context, message) =>
+        // context.log.info(state.columns.mkString)
         val newState = updateState(state, message)
         coordinator ! Part(state)
+        context.log.info(newState.columns.mkString)
         constructPart(newState, coordinator)
     }
 
@@ -75,10 +77,9 @@ object PartConstructor {
     
     def updateState(state: State, row: ValidBoardLength): State = {
         val parsedRow = makeCollection(row.board)
-        val columns: Columns = for {
-            col <- state.columns
-            head <- parsedRow
-        } yield head :: col
+        val columns: Columns = (parsedRow, state.columns).zipped.map {
+            case (r, c) => r :: c
+        }.toArray
         val squares = updateSquares(state.squares, parsedRow, row.index)
         return State(parsedRow, columns, squares)
     }
@@ -101,6 +102,7 @@ object PartValidator {
         val validColumns = message.parts.columns.map(_.hasDuplicates()).fold(true)( _ & _ )
         val validSquares = message.parts.squares.map(_.hasDuplicates()).fold(true)( _ & _)
         if (validRow | validColumns | validSquares) coordinator ! FailedValidation("Invalid part!")
+        context.log.info(message.parts.squares.mkString)
         val thisIsTheEnd = message.parts.columns.foldLeft(0)( _ + _.size) == 81
         if (thisIsTheEnd) coordinator ! Complete()
         Behaviors.same
@@ -117,7 +119,7 @@ object Coordinator {
 
     def apply(): Behavior[CoordinatorCommand] = Behaviors.setup { context =>
         val boardValidator = context.spawn(BoardValidator(context.self, context.self), "boardValidator")
-        val partsContstructor = context.spawn(PartConstructor(emptyState, context.self), "partsConstructor")
+        val partsContstructor = context.spawn(PartConstructor(context.self), "partsConstructor")
         val validator = context.spawn(PartValidator(context.self), "partValidator")
 
         Behaviors.receiveMessage {
