@@ -63,7 +63,7 @@ object PartConstructor {
 
     def makeCollection(row: Array[String]): List[Option[Int]] = row.map { case x: String => Try(x.toInt).toOption }.toList
     def updateSquares(squares: Squares, row: List[Option[Int]]): Squares = {
-        val grouped= row.grouped(3) zip squares
+        val grouped = row.grouped(3) zip squares
         (grouped map { case (a, b) => a ::: b}).toArray
 
     }
@@ -100,7 +100,7 @@ object PartValidator {
         val validRow = message.parts.row.hasDuplicates()
         val validColumns = message.parts.columns.map(_.hasDuplicates()).fold(true)( _ & _ )
         val validSquares = message.parts.squares.map(_.hasDuplicates()).fold(true)( _ & _)
-        if (validRow & validColumns & validSquares) coordinator ! FailedValidation("Invalid part!")
+        if (validRow | validColumns | validSquares) coordinator ! FailedValidation("Invalid part!")
         val thisIsTheEnd = message.parts.columns.foldLeft(0)( _ + _.size) == 81
         if (thisIsTheEnd) coordinator ! Complete()
         Behaviors.same
