@@ -16,6 +16,9 @@ import java.util.concurrent.TimeUnit
 import scala.util.Try
 import sudoko.PartValidator.FailedValidation
 import akka.actor.PoisonPill
+import scala.util.Success
+import scala.util.Failure
+import sudoko.BoardValidator.InvalidJson
 
 object BoardValidator {
 
@@ -24,6 +27,7 @@ object BoardValidator {
     final case class RawBoard(board: String)
     final case class ValidBoardLength(index: Int, board: Array[String]) extends CoordinatorCommand
     final case class BadBoardLength(boardLength: Int) extends CoordinatorCommand
+    final case class InvalidJson() extends CoordinatorCommand
 
     /**
       * This actor's job is to ensure that the raw string Sudoko board has the correct size to work. If it does, it returns it to the message hub for further processing.
@@ -34,8 +38,10 @@ object BoardValidator {
       */
     def apply(main: ActorRef[CoordinatorCommand], constructor: ActorRef[CoordinatorCommand]): Behavior[RawBoard] = Behaviors.receive { (context, message) => 
         context.log.info("Received raw board")
-        val parsed = readBoard(message.board)
-        if (correctBoardLength(parsed)) (0 until parsed.length).foreach(idx => actOnRow(idx, parsed(idx), constructor, main)) else main ! BadBoardLength(parsed.size)
+        Try(readBoard(message.board)) match {
+            case Success(parsed) => if (correctBoardLength(parsed)) (0 until parsed.length).foreach(idx => actOnRow(idx, parsed(idx), constructor, main)) else main ! BadBoardLength(parsed.size)
+            case Failure(exception) => main ! InvalidJson()
+        }
         Behaviors.same  
     }
 
@@ -110,10 +116,14 @@ object PartValidator {
       * @param xs - the list to check
       * @return true if contains duplicates, false otherwise
       */
-    implicit def checkForDuplicates(xs: List[Option[Int]]) = new {
-        def hasDuplicates(list: List[Option[Int]] = xs, seen: Set[Int] = Set[Int]()): Boolean = list match {
-            case head :: tail if head.isDefined => if (seen contains head.get) true else hasDuplicates(tail, seen + head.get)
-            case head :: tail if !head.isDefined => hasDuplicates(tail, seen)
+    implicit def checkForDuplicatesOrInvalidDigits(xs: List[Option[Int]]) = new {
+        def hasDuplicatesOrInvalidDigits(list: List[Option[Int]] = xs, seen: Set[Int] = Set[Int]()): Boolean = list match {
+            case head :: tail if !head.isEmpty => {
+                if (head.get > 9) true
+                else if (seen contains head.get) true 
+                else hasDuplicatesOrInvalidDigits(tail, seen + head.get)
+            }
+            case head :: tail if head.isEmpty => hasDuplicatesOrInvalidDigits(tail, seen)
             case  _ => false
         }
     }
@@ -128,10 +138,11 @@ object PartValidator {
       * @param coordinator - the message hub
       * @return
       */
-    def apply(coordinator: ActorRef[CoordinatorCommand]): Behavior[ValidateParts] = Behaviors.receive{ (context, message) => 
-        val validRow = message.parts.row.hasDuplicates()
-        val validColumns = message.parts.columns.map(_.hasDuplicates()).fold(false)( _ & _ )
-        val validSquares = message.parts.squares.map(_.hasDuplicates()).fold(false)( _ & _)
+    def apply(coordinator: ActorRef[CoordinatorCommand]): Behavior[ValidateParts] = Behaviors.receive{ (context, message) =>
+        val a  = message.parts.squares
+        val validRow = message.parts.row.hasDuplicatesOrInvalidDigits()
+        val validColumns = message.parts.columns.map(_.hasDuplicatesOrInvalidDigits()).fold(false)( _ | _ )
+        val validSquares = message.parts.squares.map(_.hasDuplicatesOrInvalidDigits()).fold(false)( _ | _)
         if (validRow | validColumns | validSquares) coordinator ! FailedValidation("Invalid part!")
         val thisIsTheEnd = message.parts.columns.foldLeft(0)( _ + _.size) == 81
         if (thisIsTheEnd) coordinator ! Complete()
@@ -161,6 +172,7 @@ object Coordinator {
 
         Behaviors.receiveMessage {
             case Run(board) => boardValidator ! RawBoard(board); Behaviors.same
+            case InvalidJson() => context.log.error("Invalid Json"); Behaviors.stopped
             case BadBoardLength(int) => context.log.error("Board setup incorrect!"); Behaviors.stopped
             case ValidBoardLength(idx, row) => context.log.info("received valid board row!"); partsContstructor ! ValidBoardLength(idx, row); Behaviors.same
             case Part(state) => context.log.info("Received part!"); validator ! ValidateParts(state); Behaviors.same
@@ -195,8 +207,97 @@ object Main {
                 "[\".\",\"6\",\".\",\".\",\".\",\".\",\"2\",\"8\",\".\"]," +
                 "[\".\",\".\",\".\",\".\",\"8\",\".\",\".\",\"7\",\"9\"]" +
                 "]"
+    
+    val invalidJson =   "||[" +
+                "[\"5\",\"3\",\".\",\".\",\".\",\".\",\"7\",\".\",\".\"]," +
+                "[\"6\",\".\",\".\",\"1\",\"9\",\"5\",\".\",\".\",\".\"]," +
+                "[\"3\",\"9\",\"8\",\".\",\".\",\".\",\".\",\"6\",\".\"]," +
+                "[\"3\",\"9\",\"8\",\".\",\".\",\".\",\".\",\"6\",\".\"]," +
+                "[\"3\",\"9\",\"8\",\".\",\".\",\".\",\".\",\"6\",\".\"]," +
+                "[\"8\",\".\",\".\",\".\",\"6\",\".\",\".\",\".\",\"3\"]," +
+                "[\"4\",\".\",\".\",\"8\",\".\",\"3\",\".\",\".\",\"1\"]," +
+                "[\"7\",\".\",\".\",\".\",\"2\",\".\",\".\",\".\",\"6\"]," +
+                "[\".\",\"6\",\".\",\".\",\".\",\".\",\"2\",\"8\",\".\"]," +
+                "[\".\",\".\",\".\",\".\",\"8\",\".\",\".\",\"7\",\"9\"]" +
+                "]";
+        val illegalValue =  "[" +
+                "[\"5\",\"3\",\".\",\".\",\".\",\".\",\"7\",\".\",\".\"]," +
+                "[\".\",\"6\",\".\",\".\",\".\",\".\",\"1\",\"9\",\".\"]," +
+                "[\"3\",\"9\",\"8\",\".\",\".\",\".\",\".\",\"6\",\".\"]," +
+                "[\"3\",\"9\",\"8\",\".\",\".\",\".\",\".\",\"6\",\".\"]," +
+                "[\"3\",\"9\",\"8\",\".\",\".\",\".\",\".\",\"6\",\".\"]," +
+                "[\"8\",\".\",\".\",\".\",\"16\",\".\",\".\",\".\",\"3\"]," +
+                "[\"4\",\".\",\".\",\"8\",\".\",\"3\",\".\",\".\",\"1\"]," +
+                "[\"7\",\".\",\".\",\".\",\"2\",\".\",\".\",\".\",\"6\"]," +
+                "[\".\",\"6\",\".\",\".\",\".\",\".\",\"2\",\"8\",\".\"]," +
+                "[\".\",\".\",\".\",\".\",\"8\",\".\",\".\",\"7\",\"9\"]" +
+                "]"
 
-    val map = Map("valid" -> valid, "tooFewRows" -> tooFewRows)
+        val jaggedRows =   "[" +
+                "[\"5\",\"3\",\".\",\".\",\".\",\".\",\"7\",\".\",\".\"]," +
+                "[\"6\",\".\",\".\",\"1\",\"9\",\"5\",\".\",\".\"]," +
+                "[\"3\",\"9\",\"8\",\".\",\".\",\".\",\".\",\"6\",\".\"]," +
+                "[\"3\",\"9\",\"8\",\".\",\".\",\".\",\".\",\"6\",\".\"]," +
+                "[\"3\",\"9\",\"8\",\".\",\".\",\".\",\".\",\"6\",\".\"]," +
+                "[\"8\",\".\",\".\",\".\",\"6\",\".\",\".\",\".\",\"3\"]," +
+                "[\"4\",\".\",\".\",\"8\",\".\",\"3\",\".\",\".\",\"1\"]," +
+                "[\"7\",\".\",\".\",\".\",\"2\",\".\",\".\",\".\",\"6\"]," +
+                "[\".\",\"6\",\".\",\".\",\".\",\".\",\"2\",\"8\",\".\"]," +
+                "[\".\",\".\",\".\",\".\",\"8\",\".\",\".\",\"7\",\"9\"]" +
+                "]"
+
+        val tooManyRows =   "[" +
+                "[\"5\",\"3\",\".\",\".\",\".\",\".\",\"7\",\".\",\".\"]," +
+                "[\"6\",\".\",\".\",\"1\",\"9\",\"5\",\".\",\".\"]," +
+                "[\"3\",\"9\",\"8\",\".\",\".\",\".\",\".\",\"6\",\".\"]," +
+                "[\"3\",\"9\",\"8\",\".\",\".\",\".\",\".\",\"6\",\".\"]," +
+                "[\"3\",\"9\",\"8\",\".\",\".\",\".\",\".\",\"6\",\".\"]," +
+                "[\"8\",\".\",\".\",\".\",\"6\",\".\",\".\",\".\",\"3\"]," +
+                "[\"4\",\".\",\".\",\"8\",\".\",\"3\",\".\",\".\",\"1\"]," +
+                "[\"7\",\".\",\".\",\".\",\"2\",\".\",\".\",\".\",\"6\"]," +
+                "[\".\",\"6\",\".\",\".\",\".\",\".\",\"2\",\"8\",\".\"]," +
+                "[\".\",\".\",\".\",\".\",\"8\",\".\",\".\",\"7\",\"9\"]" +
+                "]"
+
+        val duplicateSquare = "[" +
+                "[\"5\",\"3\",\".\",\".\",\".\",\".\",\"7\",\".\",\".\"]," +
+                "[\"6\",\".\",\".\",\"1\",\"9\",\"5\",\".\",\".\",\".\"]," +
+                "[\"3\",\"9\",\"8\",\".\",\".\",\".\",\".\",\"6\",\".\"]," +
+                "[\"8\",\".\",\".\",\".\",\"6\",\".\",\".\",\".\",\"3\"]," +
+                "[\"4\",\".\",\".\",\"8\",\".\",\"3\",\".\",\".\",\"1\"]," +
+                "[\"7\",\".\",\".\",\".\",\"2\",\".\",\".\",\".\",\"6\"]," +
+                "[\".\",\"6\",\".\",\".\",\".\",\".\",\"2\",\"8\",\".\"]," +
+                "[\".\",\".\",\".\",\"4\",\"1\",\"9\",\".\",\".\",\"5\"]," +
+                "[\".\",\".\",\".\",\".\",\"8\",\".\",\".\",\"7\",\"9\"]" +
+                "]";
+
+        val duplicateRow = "[" +
+                "[\"5\",\"3\",\".\",\".\",\"7\",\".\",\"7\",\".\",\".\"]," +
+                "[\"6\",\".\",\".\",\"1\",\"9\",\"5\",\".\",\".\",\".\"]," +
+                "[\".\",\"9\",\"8\",\".\",\".\",\".\",\".\",\"6\",\".\"]," +
+                "[\"8\",\".\",\".\",\".\",\"6\",\".\",\".\",\".\",\"3\"]," +
+                "[\"4\",\".\",\".\",\"8\",\".\",\"3\",\".\",\".\",\"1\"]," +
+                "[\"7\",\".\",\".\",\".\",\"2\",\".\",\".\",\".\",\"6\"]," +
+                "[\".\",\"6\",\".\",\".\",\".\",\".\",\"2\",\"8\",\".\"]," +
+                "[\".\",\".\",\".\",\"4\",\"1\",\"9\",\".\",\".\",\"5\"]," +
+                "[\".\",\".\",\".\",\".\",\"8\",\".\",\".\",\"7\",\"9\"]" +
+                "]";
+
+        val duplicateCol = "[" +
+                "[\"5\",\"3\",\".\",\".\",\"7\",\".\",\".\",\".\",\".\"]," +
+                "[\"6\",\".\",\".\",\"1\",\"9\",\"5\",\".\",\".\",\".\"]," +
+                "[\".\",\"9\",\"8\",\".\",\".\",\".\",\".\",\"6\",\".\"]," +
+                "[\"8\",\".\",\".\",\".\",\"6\",\".\",\".\",\".\",\"3\"]," +
+                "[\"4\",\".\",\".\",\"8\",\".\",\"3\",\".\",\".\",\"1\"]," +
+                "[\"7\",\".\",\".\",\".\",\"2\",\".\",\".\",\".\",\"6\"]," +
+                "[\".\",\"6\",\".\",\".\",\".\",\".\",\"2\",\"8\",\"9\"]," +
+                "[\".\",\".\",\".\",\"4\",\"1\",\"9\",\".\",\".\",\"5\"]," +
+                "[\".\",\".\",\".\",\".\",\"8\",\".\",\".\",\"7\",\"9\"]" +
+                "]";
+
+    val map = Map("valid" -> valid, "tooFewRows" -> tooFewRows, "invalidJson" -> invalidJson, "illegalValue" -> illegalValue,
+        "jaggedRows" -> jaggedRows, "tooManyRows" -> tooManyRows, "duplicateSquare" -> duplicateSquare, "duplicateRow" -> duplicateRow,
+        "duplicateCol" -> duplicateCol)
 
     def main(args: Array[String]) {
         // spawn an actor system
