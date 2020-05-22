@@ -25,6 +25,13 @@ object BoardValidator {
     final case class ValidBoardLength(index: Int, board: Array[String]) extends CoordinatorCommand
     final case class BadBoardLength(boardLength: Int) extends CoordinatorCommand
 
+    /**
+      * This actor's job is to ensure that the raw string Sudoko board has the correct size to work. If it does, it returns it to the message hub for further processing.
+      *
+      * @param main
+      * @param constructor
+      * @return
+      */
     def apply(main: ActorRef[CoordinatorCommand], constructor: ActorRef[CoordinatorCommand]): Behavior[RawBoard] = Behaviors.receive { (context, message) => 
         context.log.info("Received raw board")
         val parsed = readBoard(message.board)
@@ -53,6 +60,15 @@ object PartConstructor {
     }
     case class Part(state: State) extends CoordinatorCommand
 
+    /**
+      * This actor builds the components of the board out of raw strings. It receives a message containing the index of the row and the row as a string list,
+      * and sends a state (collection of parts, not guaranteed to be fully formed).
+      * 
+      * It is a stateful actor, as we want to add to the previous picture of columns and squares as they come up. State is kept by updating the Behavior function.
+      *
+      * @param coordinator - the message hub
+      * @return
+      */
     def apply(coordinator: ActorRef[CoordinatorCommand]): Behavior[ValidBoardLength] = constructPart(emptyState, coordinator)
 
     def constructPart(state: State, coordinator: ActorRef[CoordinatorCommand]): Behavior[ValidBoardLength] = Behaviors.receive{ (context, message) =>
@@ -87,6 +103,13 @@ object PartConstructor {
 
 object PartValidator {
 
+    /**
+      * implicits are a scala feature allowing extensions of APIs from outside the source code (among other things), so I can actually call
+      * list.hasDuplicates() on any list of type List[Option[Int]]
+      *
+      * @param xs - the list to check
+      * @return true if contains duplicates, false otherwise
+      */
     implicit def checkForDuplicates(xs: List[Option[Int]]) = new {
         def hasDuplicates(list: List[Option[Int]] = xs, seen: Set[Int] = Set[Int]()): Boolean = list match {
             case head :: tail if head.isDefined => if (seen contains head.get) true else hasDuplicates(tail, seen + head.get)
@@ -98,6 +121,13 @@ object PartValidator {
     case class Complete() extends CoordinatorCommand
     case class Status(s: String) extends CoordinatorCommand
 
+    /**
+      * This actor is responsible to make sure all the parts it receives are valid. If they are not, it shuts them down, and if the parts are complete
+      * (most easily measures as all nine slots in the column are filled) it ends the computation.
+      *
+      * @param coordinator - the message hub
+      * @return
+      */
     def apply(coordinator: ActorRef[CoordinatorCommand]): Behavior[ValidateParts] = Behaviors.receive{ (context, message) => 
         val validRow = message.parts.row.hasDuplicates()
         val validColumns = message.parts.columns.map(_.hasDuplicates()).fold(false)( _ & _ )
@@ -116,6 +146,14 @@ object Coordinator {
     final case class Run(rawBoard: String) extends CoordinatorCommand
     case class ValidateParts(parts: State)
 
+    /**
+      * This actor runs the system. Currently, it also serves as the message hub. This will change in the future, as many messages do not need
+      * to go through this intermediary. 
+      * 
+      * Another improvement is to scale the number of partsConstructor and PartValidators dynamically to increase parallelism
+      *
+      * @return 
+      */
     def apply(): Behavior[CoordinatorCommand] = Behaviors.setup { context =>
         val boardValidator = context.spawn(BoardValidator(context.self, context.self), "boardValidator")
         val partsContstructor = context.spawn(PartConstructor(context.self), "partsConstructor")
@@ -161,7 +199,9 @@ object Main {
     val map = Map("valid" -> valid, "tooFewRows" -> tooFewRows)
 
     def main(args: Array[String]) {
+        // spawn an actor system
         val system: ActorSystem[Coordinator.CoordinatorCommand] = ActorSystem(Coordinator(), "SudokoSystem")
+        // fire the first command
         system ! Run(map.get(args(0)).get)
     }
 }
