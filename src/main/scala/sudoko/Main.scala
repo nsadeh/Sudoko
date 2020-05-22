@@ -58,8 +58,8 @@ object PartConstructor {
     def constructPart(state: State, coordinator: ActorRef[CoordinatorCommand]): Behavior[ValidBoardLength] = Behaviors.receive{ (context, message) =>
         // context.log.info(state.columns.mkString)
         val newState = updateState(state, message)
-        coordinator ! Part(state)
-        context.log.info(newState.columns.mkString)
+        coordinator ! Part(newState)
+        // context.log.info(newState.columns.mkString)
         constructPart(newState, coordinator)
     }
 
@@ -88,7 +88,7 @@ object PartConstructor {
 object PartValidator {
 
     implicit def checkForDuplicates(xs: List[Option[Int]]) = new {
-        def hasDuplicates(list: List[Option[Int]] = xs, seen: Set[Int] = Set[Int]()): Boolean = xs match {
+        def hasDuplicates(list: List[Option[Int]] = xs, seen: Set[Int] = Set[Int]()): Boolean = list match {
             case head :: tail if head.isDefined => if (seen contains head.get) true else hasDuplicates(tail, seen + head.get)
             case head :: tail if !head.isDefined => hasDuplicates(tail, seen)
             case  _ => false
@@ -96,22 +96,21 @@ object PartValidator {
     }
     case class FailedValidation(message: String) extends CoordinatorCommand
     case class Complete() extends CoordinatorCommand
+    case class Status(s: String) extends CoordinatorCommand
 
     def apply(coordinator: ActorRef[CoordinatorCommand]): Behavior[ValidateParts] = Behaviors.receive{ (context, message) => 
         val validRow = message.parts.row.hasDuplicates()
-        val validColumns = message.parts.columns.map(_.hasDuplicates()).fold(true)( _ & _ )
-        val validSquares = message.parts.squares.map(_.hasDuplicates()).fold(true)( _ & _)
+        val validColumns = message.parts.columns.map(_.hasDuplicates()).fold(false)( _ & _ )
+        val validSquares = message.parts.squares.map(_.hasDuplicates()).fold(false)( _ & _)
         if (validRow | validColumns | validSquares) coordinator ! FailedValidation("Invalid part!")
-        context.log.info(message.parts.squares.mkString)
         val thisIsTheEnd = message.parts.columns.foldLeft(0)( _ + _.size) == 81
         if (thisIsTheEnd) coordinator ! Complete()
+        coordinator ! Status("Last state is valid, moving to the next")
         Behaviors.same
     }
 }
 
 object Coordinator { 
-
-    import PartValidator._
 
     trait CoordinatorCommand
     final case class Run(rawBoard: String) extends CoordinatorCommand
@@ -128,7 +127,8 @@ object Coordinator {
             case ValidBoardLength(idx, row) => context.log.info("received valid board row!"); partsContstructor ! ValidBoardLength(idx, row); Behaviors.same
             case Part(state) => context.log.info("Received part!"); validator ! ValidateParts(state); Behaviors.same
             case FailedValidation(message) => context.log.error(message); Behaviors.stopped
-            case Complete() => context.log.info("Sudoko config is valid!"); Behaviors.stopped
+            case PartValidator.Complete() => context.log.info("Sudoko config is valid!"); Behaviors.stopped
+            case PartValidator.Status(st) => context.log.info(st); Behaviors.same
         }
     }
 }
