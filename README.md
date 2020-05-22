@@ -8,7 +8,7 @@ A system to check the configuration of a Sudoko board and decide whether it is v
 1. Have an installed JDK (8 or 11)
 2. Install SBT (https://www.scala-sbt.org/1.x/docs/Installing-sbt-on-Mac.html)
 3. In the project root, run `sbt`.
-4. In the CLI that happens as a result, you can `run valid` or `run tooFewLines`. This will become better soon.
+4. In the CLI that happens as a result, you can `run <scenario>` where scenario is a test case name.
 
 
 ## Future work
